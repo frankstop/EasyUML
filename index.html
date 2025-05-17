@@ -428,20 +428,32 @@
     });
 
     /* ---------------- EXPORT IMAGE ---------------- */
-    document.getElementById('exportSvgBtn').onclick=()=>{
-      const svg=document.querySelector('#diagram svg'); if(!svg) return;
-      const src=new XMLSerializer().serializeToString(svg);
-      saveAs(new Blob([src], {type:'image/svg+xml;charset=utf-8'}), 'diagram.svg');
-    };
-    document.getElementById('exportPngBtn').onclick=()=>{
-      const svg=document.querySelector('#diagram svg'); if(!svg) return;
-      const canvas=document.createElement('canvas');
-      const ctx=canvas.getContext('2d');
-      const v=canvg.Canvg.fromString(ctx, new XMLSerializer().serializeToString(svg));
-      v.start();
-      setTimeout(()=>canvas.toBlob(b=>saveAs(b,'diagram.png')) ,100);
-    };
-
+    document.getElementById('exportSvgBtn').onclick = () => {
+  const pane = document.getElementById('diagramPane'); 
+  // dom-to-image will inline all CSS, grid-background, SVG, etc., into one vector SVG
+  domtoimage.toSvg(pane)
+    .then(svgString => {
+      // svgString is a complete standalone SVG file
+      const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+      saveAs(blob, 'diagram.svg');
+    })
+    .catch(err => {
+      console.error('SVG export failed:', err);
+      alert('Could not export SVG: see console for details.');
+    });
+};
+    document.getElementById('exportPngBtn').onclick = () => {
+  const pane = document.getElementById('diagramPane');
+  // html2canvas will paint the grid <div> + the <svg> into one raster
+  html2canvas(pane, {
+    backgroundColor: null,  // capture the transparent grid background if you ever toggle it off
+    scale: window.devicePixelRatio  // ensure high-DPI fidelity
+  }).then(canvas => {
+    canvas.toBlob(blob => {
+      if (blob) saveAs(blob, 'diagram.png');
+    });
+  });
+};
     /* ---------------- SETTINGS PANEL ---------------- */
     const settingsBtn=document.getElementById('settingsBtn');
     const settingsPanel=document.getElementById('settingsPanel');
@@ -462,5 +474,8 @@
   };
   window.addEventListener('DOMContentLoaded',init);
   </script>
+  /* ---------------- SVG AND PNG EXPORTERS---------------- */
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dom-to-image/2.6.0/dom-to-image.min.js"></script>
+  <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
 </body>
 </html>
