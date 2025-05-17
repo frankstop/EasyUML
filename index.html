@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>UML Editor</title>
+  <!-- CodeMirror -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.12/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.12/theme/eclipse.min.css">
+  
+  <!-- Styles -->
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:sans-serif;height:100vh;display:flex;flex-direction:column}
+    #toolbar{background:#f1f1f1;padding:6px;display:flex;gap:6px;align-items:center}
+    #toolbar button,#toolbar select{padding:6px 12px}
+    #container{flex:1;display:flex;overflow:hidden}
+    #editorPane,#diagramPane{flex:1;position:relative}
+    .CodeMirror{height:100%;font-size:14px}
+    #diagram{width:100%;height:100%;overflow:hidden}
+    #grid{position:absolute;inset:0;background-size:20px 20px;background-image:linear-gradient(to right,#ccc 1px,transparent 1px),linear-gradient(to bottom,#ccc 1px,transparent 1px);pointer-events:none;opacity:.4}
+    /* Dark theme overrides */
+    body.dark{background:#222;color:#e0e0e0}
+    body.dark #toolbar{background:#333}
+    body.dark .CodeMirror{background:#2b2b2b;color:#e0e0e0}
+    #contextMenu{position:absolute;z-index:1000;background:#fff;border:1px solid #ccc;display:none}
+    #contextMenu ul{list-style:none;padding:4px}
+    #contextMenu li{padding:4px 12px;cursor:pointer}
+    #contextMenu li:hover{background:#eee}
+    #settingsPanel{position:absolute;top:60px;right:20px;z-index:1000;background:#fff;padding:12px;border:1px solid #ccc;display:none;width:220px}
+  /* Make sure no inline width/height or max-width is honored */
+#diagram svg {
+  display: block;             /* eliminate inline-block gaps */
+  width: 100% !important;     /* override any width attributes */
+  height: 100% !important;    /* override any height attributes */
+  max-width: none !important; /* override any max-width styles */
+}
+
+/* If Mermaid inlines width/height attributes, this will neutralize them */
+#diagram svg[width] { width: 100% !important; }
+#diagram svg[height] { height: 100% !important; }
+  </style>
+  <!-- External libs (deferred for faster paint) -->
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.12/codemirror.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.12/mode/javascript/javascript.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.12/addon/edit/matchbrackets.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.0/mermaid.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/interactjs/dist/interact.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/canvg@3.0.7/lib/umd.js"></script>
+</head>
+<body>
+  <!-- Toolbar -->
+  <div id="toolbar" role="toolbar">
+    <button id="newBtn">New</button>
+    <button id="openBtn">Open</button>
+    <input id="fileInput" type="file" accept=".uml,.txt,.json" style="display:none">
+    <button id="saveCodeBtn">Save Code</button>
+    <button id="saveJsonBtn">Save Snapshot</button>
+    <button id="exportSvgBtn">Export SVG</button>
+    <button id="exportPngBtn">Export PNG</button>
+    <label for="examplesSelect">Examples:</label>
+    <select id="examplesSelect" aria-label="Examples list"></select>
+    <button id="settingsBtn">⚙️</button>
+  </div>
+
+  <!-- Main panes -->
+  <div id="container">
+    <div id="editorPane"><textarea id="umlEditor"></textarea></div>
+    <div id="diagramPane">
+      <div id="grid"></div>
+      <div id="diagram"></div>
+    </div>
+  </div>
+
+  <!-- Context menu -->
+  <div id="contextMenu" role="menu">
+    <ul>
+      <li data-action="editText">Edit text</li>
+      <li data-action="addAttribute">Add attribute</li>
+      <li data-action="addMethod">Add method</li>
+      <li data-action="delete">Delete</li>
+      <li data-action="bringForward">Bring forward</li>
+      <li data-action="sendBackward">Send backward</li>
+    </ul>
+  </div>
+
+  <!-- Settings -->
+  <div id="settingsPanel" role="dialog">
+    <label><input type="checkbox" id="darkTheme"> Dark theme</label><br>
+    <label>Font size <input type="number" id="fontSize" value="14" min="10" max="24"></label><br>
+    <label><input type="checkbox" id="gridToggle"> Show grid</label><br>
+    <button id="closeSettings">Close</button>
+  </div>
+
+  <!-- Application logic -->
+  <script defer>
+  /* ------------------------- INITIALISATION ------------------------- */
+  const init = () => {
+    /* CodeMirror */
+    const editor = CodeMirror.fromTextArea(document.getElementById('umlEditor'), {
+      mode: 'text/plain',
+      lineNumbers: true,
+      indentUnit: 2,
+      matchBrackets: true,
+      theme: 'eclipse'
+    });
+
+    /* Mermaid */
+    mermaid.initialize({ startOnLoad:false, securityLevel:'loose', theme:'default' });
+
+    /* EXAMPLES */
+    const examples = {
+      '— choose —':'',
+      'Banking System':`classDiagram
+        direction LR
+        class Bank {
+          +String name
+          +openAccount()
+          +closeAccount()
+        }
+        class Account {
+          +int number
+          +deposit()
+          +withdraw()
+        }
+        class Customer {
+          +String name
+          +address
+          +openAccount()
+        }
+        Bank "1" o-- "*" Account
+        Customer "1" o-- "*" Account`,
+      'E‑commerce':`classDiagram
+        class ShoppingCart {
+          +addItem(Product)
+          +removeItem(Product)
+          +getTotal()
+        }
+        class Product {
+          -int id
+          -String name
+          -Decimal price
+        }
+        class Order {
+          +createOrder()
+          +cancel()
+        }
+        ShoppingCart "1" o-- "*" Product
+        Order "1" o-- "*" Product`,
+      'Complex Inheritance':`classDiagram
+        Animal <|-- Mammal
+        Animal <|-- Bird
+        Mammal <|-- Dog
+        Mammal <|-- Cat
+        Bird <|-- Eagle
+        Bird <|-- Penguin
+        class Animal{
+          +eat()
+          +sleep()
+        }
+        class Mammal{
+          +giveBirth()
+        }
+        class Bird{
+          +layEggs()
+        }`,
+        'Flowchart Example' : `flowchart LR
+  subgraph Core & Orchestration
+    A[main.js]
+    B[eventBus.js]
+    C[dom.js]
+    D[examplesSelect]
+  end
+  subgraph Editing & Rendering
+    E[editor.js]
+    F[DiagramRenderer]
+  end
+  subgraph Diagram Interaction
+    G[panzoom.js]
+    H[dragContext.js]
+  end
+  subgraph Persistence & Export
+    I[fileIO.js]
+    J[snapshotManager.js]
+    K[export.js]
+  end
+  A -->|"codeChanged"| E
+  E -->|"render()"| F
+  F -->|SVG| G & H & J
+  G -->|zoom/pan| I
+  H -->|drag-end| J
+  J -->|save| LocalStorage
+  I -->|buttons| Download`,
+    'SequenceDiagram Example': `sequenceDiagram
+    participant EventBus
+    participant FileIO
+
+    EventBus->>FileIO: renderComplete(svg)
+    FileIO->>LocalStorage: setItem('easyUML_code', codeText)
+    EventBus->>FileIO: layoutChanged(layoutMeta)
+    FileIO->>LocalStorage: setItem('easyUML_layout', layoutMeta)`,
+        'GitGraph Example':`gitGraph
+   commit id: "Initial commit"
+   branch develop
+   checkout develop
+   commit id: "Add feature A"
+   commit id: "Refine feature A"
+   branch hotfix
+   commit id: "Hotfix critical bug"
+   checkout develop
+   merge hotfix tag: "v0.2.0-hotfix"
+   checkout main
+   merge develop tag: "v1.0.0"`,
+        'ERD Example': `erDiagram
+  CUSTOMER ||--o{ ORDER : places
+  ORDER ||--|{ LINE_ITEM : contains
+  PRODUCT ||--o{ LINE_ITEM : includes
+
+  CUSTOMER {
+    int customer_id PK
+    string name
+    string email
+  }
+  ORDER {
+    int order_id PK
+    date order_date
+    float total_amount
+  }
+  PRODUCT {
+    int product_id PK
+    string name
+    float price
+  }
+  LINE_ITEM {
+    int line_item_id PK
+    int quantity
+    float unit_price
+  }`,
+    'Pie Chart Example' : `pie
+  title Browser Market Share
+  "Chrome" : 65
+  "Firefox": 15
+  "Safari" : 10
+  "Edge"   : 5
+  "Other"  : 5`,
+    'Gantt Chart Example' : `gantt
+  title Project Timeline
+  dateFormat  YYYY-MM-DD
+  section Development
+    Planning       :done,    p1, 2025-05-01, 3d
+    Design         :active,  p2, 2025-05-04, 5d
+    Implementation :         p3, 2025-05-09, 10d
+  section Testing
+    Unit Testing   :         t1, after p3, 5d
+    QA Testing     :         t2, after t1, 4d
+  section Deployment
+    Release        :         r1, after t2, 2d`,
+      'StateDiagram Example' : `stateDiagram-v2
+  [*] --> Idle
+  Idle --> Running : start()
+  Running --> Paused : pause()
+  Paused --> Running : resume()
+  Running --> Idle : stop()`,
+    'User Journey Example' : `journey
+  title Onboarding Flow
+  section Sign Up
+    Visit site: 5: User
+    Click “Sign up”: 5: User
+    Submit form: 3: User
+  section Activation
+    Receive email: 2: System
+    Click link: 4: User
+  section Welcome
+    Show dashboard: 5: System`,
+      'Mindmap Example' : `mindmap
+  root((Project))
+    Origins
+      Long history
+      Recent events
+    Research
+      Articles
+      Interviews
+    Design
+      Wireframes
+      Mockups`, 
+    'Timeline Example' : `timeline
+  title Product Roadmap
+  2025-01-01 : v1.0 released
+  2025-03-15 : v1.1 feature update
+  2025-06-01 : v2.0 redesign`   
+        
+        
+    };
+    const examplesSelect = document.getElementById('examplesSelect');
+    Object.keys(examples).forEach(k=>{
+      const opt=document.createElement('option');opt.value=k;opt.textContent=k;examplesSelect.appendChild(opt);
+    });
+    examplesSelect.addEventListener('change', e=>{
+      const code = examples[e.target.value]||'';
+      if(code){editor.setValue(code);}  // triggers render
+      e.target.selectedIndex=0; // reset placeholder
+    });
+
+    /* ---------------- LIVE RENDERING ---------------- */
+    let debounceTimer;
+    async function renderDiagram(){
+      const code = editor.getValue();
+      try{
+        // parse to catch errors early
+        mermaid.parse(code);
+        const {svg} = await mermaid.render('graph'+Date.now(), code);
+        const container=document.getElementById('diagram');
+        container.innerHTML=svg;
+        attachPanZoom();
+        attachDragAndContext();
+        applySavedLayout();
+      }catch(err){
+        console.error(err);
+      }
+    }
+    editor.on('change',()=>{
+      clearTimeout(debounceTimer);
+      debounceTimer=setTimeout(()=>{
+        renderDiagram();
+        saveSnapshot();
+      },300);
+    });
+
+    /* ---------------- PAN & ZOOM ---------------- */
+    let panZoomInstance;
+    function attachPanZoom(){
+      if(panZoomInstance){panZoomInstance.destroy();}
+      const svg = document.querySelector('#diagram svg');
+      if(!svg) return;
+      panZoomInstance = svgPanZoom(svg, {controlIconsEnabled:true, fit:true, center:true});
+    }
+    // prevent ctrl+wheel from zooming whole page
+    document.getElementById('diagramPane').addEventListener('wheel',e=>{if(e.ctrlKey){e.preventDefault();}}, {passive:false});
+
+    /* ---------------- DRAG + CONTEXT ---------------- */
+    let layoutMeta={};
+    function attachDragAndContext(){
+      const svg=document.querySelector('#diagram svg');
+      if(!svg) return;
+      svg.querySelectorAll('.node').forEach(el=>{
+        el.classList.add('draggable');
+        const id = el.id;
+        if(!id) return;
+        el.style.cursor='move';
+        interact(el).draggable({
+          listeners:{
+        // on drag start: turn off svg panning
+            start() {
+          if (panZoomInstance) panZoomInstance.disablePan();
+        },
+        
+            move(event){
+              const {dx,dy} = event;
+              const cur = el.getCTM();
+              const x = (layoutMeta[id]?.x||0)+dx;
+              const y = (layoutMeta[id]?.y||0)+dy;
+              el.setAttribute('transform',`translate(${x},${y})`);
+              layoutMeta[id]={x,y};
+            },
+            end(){
+              if (panZoomInstance) panZoomInstance.enablePan();
+              saveSnapshot(); }
+          }
+        });
+        el.addEventListener('contextmenu',e=>showContextMenu(e,id));
+      });
+    }
+
+    function showContextMenu(e,id){
+      e.preventDefault();
+      const menu=document.getElementById('contextMenu');
+      menu.style.left=e.clientX+'px';
+      menu.style.top=e.clientY+'px';
+      menu.style.display='block';
+      menu.setAttribute('data-target',id);
+    }
+    window.addEventListener('click',()=>document.getElementById('contextMenu').style.display='none');
+
+    /* ---------------- FILE HANDLING ---------------- */
+    document.getElementById('newBtn').onclick = ()=>{ editor.setValue(''); layoutMeta={}; document.getElementById('diagram').innerHTML=''; localStorage.removeItem('umlSnapshot'); };
+    document.getElementById('openBtn').onclick=()=>document.getElementById('fileInput').click();
+    document.getElementById('fileInput').addEventListener('change',e=>{
+      const file=e.target.files[0]; if(!file) return;
+      const reader=new FileReader();
+      reader.onload=()=>{
+        if(file.name.endsWith('.json')){
+          const snap=JSON.parse(reader.result);
+          editor.setValue(snap.code||'');
+          layoutMeta=snap.layout||{};
+        }else{
+          editor.setValue(reader.result);
+        }
+      };
+      reader.readAsText(file);
+      e.target.value='';
+    });
+    document.getElementById('saveCodeBtn').onclick=()=>{
+      const blob=new Blob([editor.getValue()], {type:'text/plain;charset=utf-8'});
+      saveAs(blob,'diagram.uml');
+    };
+    document.getElementById('saveJsonBtn').onclick=()=>{
+      const snap={code:editor.getValue(),layout:layoutMeta};
+      const blob=new Blob([JSON.stringify(snap,null,2)],{type:'application/json'});
+      saveAs(blob,'diagram.json');
+    };
+    function saveSnapshot(){
+      localStorage.setItem('umlSnapshot', JSON.stringify({code:editor.getValue(),layout:layoutMeta}));
+    }
+    function applySavedLayout(){
+      const svg=document.querySelector('#diagram svg'); if(!svg) return;
+      Object.entries(layoutMeta).forEach(([id,pos])=>{
+        const el=svg.querySelector(`#${CSS.escape(id)}`);
+        if(el){ el.setAttribute('transform',`translate(${pos.x},${pos.y})`); }
+      });
+    }
+    window.addEventListener('load',()=>{
+      const snapshot=localStorage.getItem('umlSnapshot');
+      if(snapshot){ const snap=JSON.parse(snapshot); editor.setValue(snap.code||''); layoutMeta=snap.layout||{}; }
+      else { editor.setValue(Object.values(examples)[1]); }
+      renderDiagram();
+    });
+
+    /* ---------------- EXPORT IMAGE ---------------- */
+    document.getElementById('exportSvgBtn').onclick=()=>{
+      const svg=document.querySelector('#diagram svg'); if(!svg) return;
+      const src=new XMLSerializer().serializeToString(svg);
+      saveAs(new Blob([src], {type:'image/svg+xml;charset=utf-8'}), 'diagram.svg');
+    };
+    document.getElementById('exportPngBtn').onclick=()=>{
+      const svg=document.querySelector('#diagram svg'); if(!svg) return;
+      const canvas=document.createElement('canvas');
+      const ctx=canvas.getContext('2d');
+      const v=canvg.Canvg.fromString(ctx, new XMLSerializer().serializeToString(svg));
+      v.start();
+      setTimeout(()=>canvas.toBlob(b=>saveAs(b,'diagram.png')) ,100);
+    };
+
+    /* ---------------- SETTINGS PANEL ---------------- */
+    const settingsBtn=document.getElementById('settingsBtn');
+    const settingsPanel=document.getElementById('settingsPanel');
+    settingsBtn.onclick=()=>settingsPanel.style.display='block';
+    document.getElementById('closeSettings').onclick=()=>settingsPanel.style.display='none';
+    document.getElementById('darkTheme').onchange=e=>{
+      document.body.classList.toggle('dark',e.target.checked);
+      mermaid.initialize({theme:e.target.checked?'dark':'default'});
+      renderDiagram();
+    };
+    document.getElementById('fontSize').onchange=e=>{
+      editor.getWrapperElement().style.fontSize=e.target.value+'px';
+      editor.refresh();
+    };
+    document.getElementById('gridToggle').onchange=e=>{
+      document.getElementById('grid').style.display=e.target.checked?'block':'none';
+    };
+  };
+  window.addEventListener('DOMContentLoaded',init);
+  </script>
+</body>
+</html>
